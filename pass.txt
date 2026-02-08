@@ -1,0 +1,4 @@
+admin admin@bmsce.ac.in BmsceAdmin123
+faculty uma.mca@bmsce.ac.in UmaBmsce123
+        sunithat.mca@bmsce.ac.in SunithaMca123
+student archanasharma.mca24@bmsce.ac.in ArchBmsce123
