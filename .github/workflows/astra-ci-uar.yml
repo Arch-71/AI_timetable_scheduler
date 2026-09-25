@@ -1,0 +1,59 @@
+name: Astra CI
+
+on:
+  push:
+    branches:
+      - "main"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: "."
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          docker version
+
+      - name: Build
+        run: |
+          docker build --file Dockerfile --tag astra-app:ci . && docker save astra-app:ci --output astra-container-image.tar
+
+      - name: Generate and verify supply-chain evidence
+        env:
+          ASTRA_COMMIT_SHA: ${{ github.sha }}
+          ASTRA_RUN_ID: github:${{ github.repository }}:${{ github.run_id }}
+          ASTRA_COSIGN_PRIVATE_KEY: ${{ secrets.ASTRA_COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          ASTRA_SECURITY_DIR="astra-security"
+          mkdir -p "$ASTRA_SECURITY_DIR"
+          docker run --rm -v "$PWD:/workspace" aquasec/trivy:0.74.0 fs --scanners vuln --format cyclonedx --output /workspace/astra-security/sbom.cdx.json /workspace
+          docker run --rm -v "$PWD:/workspace" aquasec/trivy:0.74.0 fs --format json --output /workspace/astra-security/vulnerabilities.json --severity HIGH,CRITICAL --exit-code 1 /workspace
+          find . -path "./.git" -prune -o -path "./astra-security" -prune -o -type f -print0 | sort -z | xargs -0 sha256sum > "$ASTRA_SECURITY_DIR/artifact-manifest.sha256"
+          ASTRA_MANIFEST_SHA="$(sha256sum "$ASTRA_SECURITY_DIR/artifact-manifest.sha256" | cut -d' ' -f1)"
+          printf '{"_type":"https://in-toto.io/Statement/v1","subject":[{"name":"astra-build","digest":{"sha256":"%s"}}],"predicateType":"https://slsa.dev/provenance/v1","predicate":{"buildDefinition":{"externalParameters":{"commit":"%s"}},"runDetails":{"builder":{"id":"%s"}}}}
+          ' "$ASTRA_MANIFEST_SHA" "${ASTRA_COMMIT_SHA:-unknown}" "${ASTRA_RUN_ID:-unknown}" > "$ASTRA_SECURITY_DIR/provenance.intoto.json"
+          : "${ASTRA_COSIGN_PRIVATE_KEY:?Configure ASTRA_COSIGN_PRIVATE_KEY as a protected provider secret}"
+          : "${COSIGN_PASSWORD:?Configure COSIGN_PASSWORD as a protected provider secret}"
+          docker run --rm -e ASTRA_COSIGN_PRIVATE_KEY -e COSIGN_PASSWORD -v "$PWD:/workspace" ghcr.io/sigstore/cosign/cosign:v3.1.3 sign-blob --yes --key env://ASTRA_COSIGN_PRIVATE_KEY --bundle /workspace/astra-security/signature.bundle /workspace/astra-security/provenance.intoto.json
+      - name: Upload supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: astra-supply-chain
+          path: "astra-security/**"
+          if-no-files-found: ignore
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: astra-build
+          path: ".next"
+          if-no-files-found: ignore
