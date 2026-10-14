@@ -3,7 +3,7 @@ name: Astra CI
 on:
   push:
     branches:
-      - "main"
+      - "second"
   workflow_dispatch:
 
 permissions:
